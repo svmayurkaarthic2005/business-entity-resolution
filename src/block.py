@@ -16,6 +16,7 @@ Per country (open set of labels), per source, S1 in chunks of 50K:
   union -> exact cosines for every pair -> learned re-ranker (or cos sum) -> keep top KEEP (--k)
 """
 import argparse
+import multiprocessing as mp
 import os
 import pickle
 import time
@@ -25,13 +26,16 @@ import polars as pl
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sparse_dot_topn import sp_matmul_topn
+from threadpoolctl import threadpool_limits
 
 from common import CACHE, log
 
 N = CACHE / "norm"
 TF = CACHE / "tfidf"
-RETR, CHUNK, MAX_BLOCK, THREADS = 30, 50_000, 200, os.cpu_count()  # RETR = top-n per channel
+RETR, CHUNK, MAX_BLOCK, THREADS = 30, 20_000, 200, os.cpu_count()  # RETR = top-n per channel
+WORKERS = max(1, os.cpu_count() // 2)  # parallel chunk workers (fork; serial on Windows)
 KEEP = 30  # candidates kept per (S1, source) after re-ranking; --k
+FLOOR = 0.0  # ...and only if re-ranker probability >= FLOOR; --floor (VAL: k=10, floor=0.003 -> 97.4% recall, 11 cands/S1)
 MAX_DF = 0.01  # drop n-grams/words in >1% of names: ~8x faster top-n, negligible signal loss
 POOL = {"VAL": "train", "LOCO": "train", "FIT": "train", "TRAIN": "train", "TEST": "test"}
 CHANNELS = ((1, "char"), (2, "word"), (8, "addr"))
@@ -146,35 +150,55 @@ def score(u, model):
     return u.with_columns(score=pl.Series(p, dtype=pl.Float32))
 
 
+_W = {}  # state shared with forked workers (copy-on-write): matrices, pools, model
+
+
+def _chunk(args):
+    """Candidates for query rows c0:c1 against one source (runs in a worker process)."""
+    with threadpool_limits(THREADS):  # keep OpenMP (re-ranker) from oversubscribing the cores
+        return _chunk_body(*args)
+
+
+def _chunk_body(s, c0, c1):
+    qm, tf, am, ex_q, ex_p, pT = _W["qm"], _W["tf"], _W["am"][s], _W["ex"][s][0], _W["ex"][s][1], _W["pT"][s]
+    parts = []
+    for bit, ch in CHANNELS:
+        r, p = topn(qm[ch][c0:c1], pT[ch], RETR)
+        parts.append(pl.DataFrame({"qi": r + c0, "pi": p, "channel": np.full(len(r), bit, np.int8)}))
+    m = (ex_q >= c0) & (ex_q < c1)
+    parts.append(pl.DataFrame({"qi": ex_q[m], "pi": ex_p[m], "channel": np.full(m.sum(), 4, np.int8)}))
+    u = pl.concat(parts).group_by("qi", "pi").agg(pl.col("channel").sum())
+    qi, pi = u["qi"].to_numpy(), u["pi"].to_numpy()
+    u = u.with_columns(**{f"{ch}_cos": pair_cos(qm[ch], tf["mat"][(ch, s)], qi, pi) for _, ch in CHANNELS},
+                       am=pl.Series(am[pi]))
+    u = score(add_features(u), _W["model"])
+    u = u.with_columns(rank=pl.col("score").rank("ordinal", descending=True).over("qi") - 1)
+    if not _W["raw"]:
+        u = u.filter((pl.col("rank") < KEEP) & (pl.col("score") >= FLOOR))
+    return u.with_columns(
+        s1_id=pl.Series(_W["qid"][u["qi"].to_numpy()]),
+        cand_id=pl.Series(_W["pid"][s][u["pi"].to_numpy()]),
+        source=pl.lit(s, pl.Int8)).drop("qi", "pi")
+
+
 def block_country(q, pools, tf, model, raw):
-    """All candidates for the S1 rows of one country."""
-    res = []
-    qm = {ch: tf["vec"][ch].transform(q[f"t_{ch}"].to_list()) for _, ch in CHANNELS}
-    for s in (2, 3):
-        pT = {ch: tf["mat"][(ch, s)].T.tocsr() for _, ch in CHANNELS}
-        am = pools[s]["addr_missing"].to_numpy()
-        ex_q, ex_p = exact_pairs(q, pools[s])
-        for c0 in range(0, len(q), CHUNK):
-            c1 = min(c0 + CHUNK, len(q))
-            parts = []
-            for bit, ch in CHANNELS:
-                r, p = topn(qm[ch][c0:c1], pT[ch], RETR)
-                parts.append(pl.DataFrame({"qi": r + c0, "pi": p, "channel": np.full(len(r), bit, np.int8)}))
-            m = (ex_q >= c0) & (ex_q < c1)
-            parts.append(pl.DataFrame({"qi": ex_q[m], "pi": ex_p[m], "channel": np.full(m.sum(), 4, np.int8)}))
-            u = pl.concat(parts).group_by("qi", "pi").agg(pl.col("channel").sum())
-            qi, pi = u["qi"].to_numpy(), u["pi"].to_numpy()
-            u = u.with_columns(**{f"{ch}_cos": pair_cos(qm[ch], tf["mat"][(ch, s)], qi, pi)
-                                  for _, ch in CHANNELS}, am=pl.Series(am[pi]))
-            u = score(add_features(u), model)
-            u = u.with_columns(rank=pl.col("score").rank("ordinal", descending=True).over("qi") - 1)
-            if not raw:
-                u = u.filter(pl.col("rank") < KEEP)
-            res.append(u.with_columns(
-                s1_id=pl.Series(q["id"].to_numpy()[u["qi"].to_numpy()]),
-                cand_id=pl.Series(pools[s]["id"].to_numpy()[u["pi"].to_numpy()]),
-                source=pl.lit(s, pl.Int8)))
-        log(f"  source {s}: {sum(len(r) for r in res):,} candidate rows so far")
+    """All candidates for the S1 rows of one country; chunks run in parallel forked workers."""
+    global THREADS
+    _W.update(tf=tf, model=model, raw=raw, qid=q["id"].to_numpy(),
+              qm={ch: tf["vec"][ch].transform(q[f"t_{ch}"].to_list()) for _, ch in CHANNELS},
+              pT={s: {ch: tf["mat"][(ch, s)].T.tocsr() for _, ch in CHANNELS} for s in (2, 3)},
+              am={s: pools[s]["addr_missing"].to_numpy() for s in (2, 3)},
+              pid={s: pools[s]["id"].to_numpy() for s in (2, 3)},
+              ex={s: exact_pairs(q, pools[s]) for s in (2, 3)})
+    jobs = [(s, c0, min(c0 + CHUNK, len(q))) for s in (2, 3) for c0 in range(0, len(q), CHUNK)]
+    if WORKERS > 1 and len(jobs) > 1 and "fork" in mp.get_all_start_methods():
+        THREADS = max(1, os.cpu_count() // WORKERS)
+        with mp.get_context("fork").Pool(WORKERS) as pool:
+            res = pool.map(_chunk, jobs)
+    else:
+        res = [_chunk(j) for j in jobs]
+    _W.clear()
+    log(f"  {len(jobs)} chunks -> {sum(len(r) for r in res):,} candidate rows")
     return pl.concat(res).select("s1_id", "cand_id", "source", "channel",
                                  pl.col("rank").cast(pl.Int16), "score", *FEATS)
 
@@ -260,17 +284,18 @@ FRAC = None
 
 
 def main():
-    global FRAC, KEEP
+    global FRAC, KEEP, FLOOR
     ap = argparse.ArgumentParser()
     ap.add_argument("--split", default="VAL", choices=list(POOL))
     ap.add_argument("--frac", type=float, default=None, help="use a fraction of the split's S1 rows")
     ap.add_argument("--raw", action="store_true", help="keep the whole union (re-ranker training rows)")
     ap.add_argument("--fit-rerank", action="store_true", help="train the re-ranker from candidates_FIT_raw")
     ap.add_argument("--k", type=int, default=30, help="candidates kept per (S1, source)")
+    ap.add_argument("--floor", type=float, default=0.0, help="minimum re-ranker probability to keep a candidate")
     a = ap.parse_args()
     if a.fit_rerank:
         return fit_rerank()
-    FRAC, KEEP = a.frac, a.k
+    FRAC, KEEP, FLOOR = a.frac, a.k, a.floor
     t0 = time.time()
     model = None if a.raw or not RERANK.exists() else pickle.load(open(RERANK, "rb"))
     log(f"re-ranker: {'learned' if model else 'cosine sum'}")

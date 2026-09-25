@@ -52,9 +52,11 @@ def macro_f05(taken, truth_n):
     return float(t.select(f.mean()).item())
 
 
-def tune():
-    pred = pl.read_parquet(CACHE / "pred_TRAIN.parquet")
+def tune(pred_file="pred_TRAIN.parquet"):
+    pred = pl.read_parquet(CACHE / pred_file)
     val_ids = pl.read_parquet(CACHE / "splits.parquet").filter(pl.col("rand") == "VAL").select("s1_id")
+    if pred_file != "pred_TRAIN.parquet":  # partial VAL runs (--frac): score only the S1 that were queried
+        val_ids = val_ids.join(pred.filter(pl.col("role") == "val").select("s1_id").unique(), on="s1_id")
     truth_n = val_ids.join(pl.read_parquet(CACHE / "gt_s1.parquet").rename({"n_matches": "n"}), on="s1_id")
     log(f"VAL: {len(truth_n):,} S1, {truth_n['n'].sum():,} true pairs; pred rows {len(pred):,}")
     results = []
@@ -95,10 +97,10 @@ def apply(pred, cfg):
     return choose(pa, cfg["miss"], cfg["gamma"], cfg["floor"]).filter("take")
 
 
-def write_outputs():
+def write_outputs(pred_file="pred_TEST.parquet"):
     """Final TEST files: one row per test S1, comma-separated S2-/S3- entity ids."""
     cfg = json.load(open(CACHE / "decide.json"))["cfg"]
-    pred = pl.read_parquet(CACHE / "pred_TEST.parquet")
+    pred = pl.read_parquet(CACHE / pred_file)
     kept = apply(pred, cfg)
     ids = {s: pl.read_parquet(CACHE / f"test_source{s}.parquet", columns=["id", "entity_id"]) for s in (1, 2, 3)}
     ent = pl.concat([ids[s].with_columns(source=pl.lit(s, pl.Int8)) for s in (2, 3)]).rename({"id": "cand_id"})
@@ -119,5 +121,18 @@ def write_outputs():
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--split", default="VAL", choices=["VAL", "TEST"])
+    ap.add_argument("--pred", default=None, help="prediction parquet in cache/ (default pred_<TRAIN|TEST>)")
+    ap.add_argument("--from-candidates", default=None,
+                    help="baseline: build the pred file from a candidates parquet, using the re-ranker score as p")
     a = ap.parse_args()
-    tune() if a.split == "VAL" else write_outputs()
+    if a.from_candidates:
+        c = pl.read_parquet(CACHE / a.from_candidates)
+        gt = pl.read_parquet(CACHE / "gt_pairs.parquet").select(
+            "s1_id", cand_id="match_id", source="match_source", is_match=pl.lit(True))
+        c = c.join(gt, on=["s1_id", "cand_id", "source"], how="left").with_columns(pl.col("is_match").fill_null(False))
+        a.pred = "pred_baseline_" + a.split + ".parquet"
+        c.select("s1_id", "cand_id", "source", "is_match", role=pl.lit("val"), p="score").write_parquet(CACHE / a.pred)
+    if a.split == "VAL":
+        tune(a.pred or "pred_TRAIN.parquet")
+    else:
+        write_outputs(a.pred or "pred_TEST.parquet")
