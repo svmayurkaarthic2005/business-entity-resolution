@@ -218,8 +218,12 @@ def block_country(q, pools, tf, model, raw):
               ex={s: exact_pairs(q, pools[s]) for s in (2, 3)})
     jobs = [(s, c0, min(c0 + CHUNK, len(q))) for s in (2, 3) for c0 in range(0, len(q), CHUNK)]
     THREADS = max(1, os.cpu_count() // WORKERS)
+    res, t0 = [], time.time()
     with ThreadPoolExecutor(WORKERS) as ex:
-        res = list(ex.map(_chunk, jobs))
+        for i, r in enumerate(ex.map(_chunk, jobs), 1):  # in order; log progress every ~10%
+            res.append(r)
+            if i % max(1, len(jobs) // 10) == 0:
+                log(f"    {i}/{len(jobs)} chunks ({time.time() - t0:.0f}s)")
     _W.clear()
     log(f"  {len(jobs)} chunks -> {sum(len(r) for r in res):,} candidate rows")
     return pl.concat(res).select("s1_id", "cand_id", "source", "channel",

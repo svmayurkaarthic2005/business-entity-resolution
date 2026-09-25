@@ -6,3 +6,4 @@ date | phase | config | blocking recall | avg candidates/S1 | val macro F0.5 | p
 2026-09-25 | P3 block v2 (Colab L4) | + address char channel + learned re-ranker (HGB on FIT 1% raw union), VAL frac 0.2 | K5 0.9661 / K10 0.9784 / K20 0.9826 / K30 0.9837 (union ceiling 0.985) | 10 / 20 / 40 / 60 | - | K5: US 0.970 India 0.960, indic 0.964, empty-addr 0.746 | GATE PASSED
 2026-09-25 | P3 floor | K10 + re-ranker prob >= 0.003 | 0.9737 | 11.0 | - | (K10 floor .01: 0.9662 @ 7.4) | chosen for TRAIN/TEST
 2026-09-25 | baseline decide | re-ranker prob as p, threshold 0.7 (VAL frac) | - | - | 0.83734 (P 0.876 R 0.773 singleton 0.506) | - | first end-to-end estimate
+2026-09-26 | P3 new code check | numba pair-cos + threads, VAL frac 0.05, K10 floor 0.003 | 0.9732 (US 0.977, India 0.968) | 11.03 (p95 19) | - | - | recall reproduced; TEST France: 16.6 cands/S1
