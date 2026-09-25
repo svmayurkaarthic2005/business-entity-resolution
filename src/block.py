@@ -32,7 +32,7 @@ from common import CACHE, log
 N = CACHE / "norm"
 TF = CACHE / "tfidf"
 RETR, CHUNK, MAX_BLOCK, THREADS = 30, 20_000, 200, os.cpu_count()  # RETR = top-n per channel
-WORKERS = max(1, os.cpu_count() // 2)  # parallel chunk threads (matmul/polars/sklearn release the GIL)
+WORKERS = int(os.environ.get("BLOCK_WORKERS", 1))  # sparse_dot_topn holds the GIL -> 1 worker, all cores to top-n
 KEEP = 30  # candidates kept per (S1, source) after re-ranking; --k
 FLOOR = 0.0  # ...and only if re-ranker probability >= FLOOR; --floor (VAL: k=10, floor=0.003 -> 97.4% recall, 11 cands/S1)
 MAX_DF = 0.01  # drop n-grams/words in >1% of names: ~8x faster top-n, negligible signal loss
@@ -336,6 +336,7 @@ def main():
         out.append(block_country(q.filter(pl.col("country") == country), pc, tf, model, a.raw))
         del tf
     cands = pl.concat(out)
+    q.select(pl.col("id").alias("s1_id")).write_parquet(CACHE / f"queried_{a.split}.parquet")  # S1 actually queried
     path = CACHE / f"candidates_{a.split}{'_frac' if a.frac and not a.raw else ''}{'_raw' if a.raw else ''}.parquet"
     cands.write_parquet(path)
     log(f"wrote {path.name}: {len(cands):,} rows in {time.time() - t0:.0f}s")

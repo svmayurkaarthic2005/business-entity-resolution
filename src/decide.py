@@ -55,7 +55,9 @@ def macro_f05(taken, truth_n):
 def tune(pred_file="pred_TRAIN.parquet"):
     pred = pl.read_parquet(CACHE / pred_file)
     val_ids = pl.read_parquet(CACHE / "splits.parquet").filter(pl.col("rand") == "VAL").select("s1_id")
-    if pred_file != "pred_TRAIN.parquet":  # partial VAL runs (--frac): score only the S1 that were queried
+    if pred_file == "pred_TRAIN.parquet" and (CACHE / "queried_TRAIN.parquet").exists():  # TRAIN run on a sample
+        val_ids = val_ids.join(pl.read_parquet(CACHE / "queried_TRAIN.parquet"), on="s1_id")
+    elif pred_file != "pred_TRAIN.parquet":  # partial VAL runs (--frac): score only the S1 that were queried
         val_ids = val_ids.join(pred.filter(pl.col("role") == "val").select("s1_id").unique(), on="s1_id")
     truth_n = val_ids.join(pl.read_parquet(CACHE / "gt_s1.parquet").rename({"n_matches": "n"}), on="s1_id")
     log(f"VAL: {len(truth_n):,} S1, {truth_n['n'].sum():,} true pairs; pred rows {len(pred):,}")
