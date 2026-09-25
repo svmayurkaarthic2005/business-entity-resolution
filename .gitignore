@@ -1,0 +1,10 @@
+# data and generated artefacts (multi-GB; dataset must not be published)
+cache/
+output/
+data/
+*.tsv
+*.parquet
+*.zip
+__pycache__/
+*.pyc
+.venv/

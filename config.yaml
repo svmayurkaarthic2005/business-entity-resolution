@@ -1,0 +1,5 @@
+data_dir: C:/__MACOSX/data
+cache_dir: C:/__MACOSX/ber/cache
+output_dir: C:/__MACOSX/ber/output
+seed: 42
+val_frac: 0.05
