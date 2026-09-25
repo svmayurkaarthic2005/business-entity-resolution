@@ -116,7 +116,7 @@ def write_outputs(pred_file="pred_TEST.parquet"):
                 .sort("s1_id").select("source1_entity_id", col)
         out.write_csv(OUT / name, separator="\t", quote_style="never")
         log(f"wrote {name}: {len(out):,} rows, non-empty {(out[col] != '').mean():.3f}, "
-            f"avg ids {out[col].str.count_matches(',').add(1).filter(out[col] != '').mean():.2f}")
+            f"avg ids {(out[col].str.count_matches(',') + 1).filter(out[col] != '').mean():.2f}")
     log(f"config {cfg}")
 
 
