@@ -7,3 +7,4 @@ date | phase | config | blocking recall | avg candidates/S1 | val macro F0.5 | p
 2026-09-25 | P3 floor | K10 + re-ranker prob >= 0.003 | 0.9737 | 11.0 | - | (K10 floor .01: 0.9662 @ 7.4) | chosen for TRAIN/TEST
 2026-09-25 | baseline decide | re-ranker prob as p, threshold 0.7 (VAL frac) | - | - | 0.83734 (P 0.876 R 0.773 singleton 0.506) | - | first end-to-end estimate
 2026-09-26 | P3 new code check | numba pair-cos + threads, VAL frac 0.05, K10 floor 0.003 | 0.9732 (US 0.977, India 0.968) | 11.03 (p95 19) | - | - | recall reproduced; TEST France: 16.6 cands/S1
+2026-09-26 | retrieval pruning | top-n on vectors without n-grams in > RETR_DF of records (scores on full vectors), VAL frac 0.2 K10 floor .003 | 0.002: 0.9596 / 0.005: 0.9718 / 0.01: 0.9732 | 10.6 / 10.95 / 11.0 | - | - | India chunk 8.7K S1: 5s / 9s / ~23s -> chose 0.005

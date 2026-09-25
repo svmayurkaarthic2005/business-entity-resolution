@@ -23,6 +23,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import polars as pl
+import scipy.sparse as sp
+from sklearn.preprocessing import normalize
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sparse_dot_topn import sp_matmul_topn
@@ -36,6 +38,7 @@ WORKERS = int(os.environ.get("BLOCK_WORKERS", 1))  # sparse_dot_topn holds the G
 KEEP = 30  # candidates kept per (S1, source) after re-ranking; --k
 FLOOR = 0.0  # ...and only if re-ranker probability >= FLOOR; --floor (VAL: k=10, floor=0.003 -> 97.4% recall, 11 cands/S1)
 MAX_DF = 0.01  # drop n-grams/words in >1% of names: ~8x faster top-n, negligible signal loss
+RETR_DF = float(os.environ.get("RETR_DF", 0.005))  # VAL: 97.18% vs 97.32% recall, ~2.5x faster  # retrieval-only pruning (scores still use full vectors)
 POOL = {"VAL": "train", "LOCO": "train", "FIT": "train", "TRAIN": "train", "TEST": "test"}
 CHANNELS = ((1, "char"), (2, "word"), (8, "addr"))
 FEATS = ["char_cos", "word_cos", "addr_cos", "ch_char", "ch_word", "ch_exact", "ch_addr", "am",
@@ -184,7 +187,7 @@ def _chunk(args):
     qm, tf, am, ex_q, ex_p, pT = _W["qm"], _W["tf"], _W["am"][s], _W["ex"][s][0], _W["ex"][s][1], _W["pT"][s]
     parts = []
     for bit, ch in CHANNELS:
-        r, p = topn(qm[ch][c0:c1], pT[ch], RETR)
+        r, p = topn(_W["qr"][ch][c0:c1], pT[ch], RETR)
         parts.append(pl.DataFrame({"qi": r + c0, "pi": p, "channel": np.full(len(r), bit, np.int8)}))
     m = (ex_q >= c0) & (ex_q < c1)
     parts.append(pl.DataFrame({"qi": ex_q[m], "pi": ex_p[m], "channel": np.full(m.sum(), 4, np.int8)}))
@@ -211,8 +214,17 @@ def block_country(q, pools, tf, model, raw):
     qm = {ch: tf["vec"][ch].transform(q[f"t_{ch}"].to_list()) for _, ch in CHANNELS}
     for m in qm.values():
         m.sort_indices()
+    # retrieval uses vectors without n-grams in > RETR_DF of pool records (much faster top-n);
+    # the cosines fed to the re-ranker are still computed on the full vectors
+    keep = {}
+    for _, ch in CHANNELS:
+        m2, m3 = tf["mat"][(ch, 2)], tf["mat"][(ch, 3)]
+        df = (np.bincount(m2.indices, minlength=m2.shape[1]) + np.bincount(m3.indices, minlength=m3.shape[1])) / (m2.shape[0] + m3.shape[0])
+        keep[ch] = sp.diags((df <= RETR_DF).astype(np.float32))
+    prune = lambda m, ch: normalize((m @ keep[ch]).tocsr())
     _W.update(tf=tf, model=model, raw=raw, qid=q["id"].to_numpy(), qm=qm,
-              pT={s: {ch: tf["mat"][(ch, s)].T.tocsr() for _, ch in CHANNELS} for s in (2, 3)},
+              qr={ch: prune(qm[ch], ch) for _, ch in CHANNELS},
+              pT={s: {ch: prune(tf["mat"][(ch, s)], ch).T.tocsr() for _, ch in CHANNELS} for s in (2, 3)},
               am={s: pools[s]["addr_missing"].to_numpy() for s in (2, 3)},
               pid={s: pools[s]["id"].to_numpy() for s in (2, 3)},
               ex={s: exact_pairs(q, pools[s]) for s in (2, 3)})

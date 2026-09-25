@@ -1,6 +1,6 @@
 set -e
 cd /content/ber; export PYTHONIOENCODING=utf-8
-while pgrep -f 'split TEST' >/dev/null; do sleep 20; done
+python src/block.py --split TEST --k 10 --floor 0.003
 test -f cache/candidates_TEST.parquet
 cp cache/decide_baseline.json cache/decide.json
 python src/decide.py --split TEST --from-candidates candidates_TEST.parquet
