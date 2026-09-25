@@ -15,7 +15,7 @@ from sklearn.metrics import roc_auc_score
 
 from common import CACHE, log
 
-DROP = {"s1_id", "cand_id", "role", "country", "is_match", "rank"}
+DROP = {"s1_id", "cand_id", "role", "country", "is_match"}
 PARAMS = dict(objective="binary", learning_rate=0.05, num_leaves=127, min_data_in_leaf=100,
               feature_fraction=0.8, bagging_fraction=0.8, bagging_freq=1, lambda_l2=1.0,
               verbose=-1, seed=42, num_threads=0)

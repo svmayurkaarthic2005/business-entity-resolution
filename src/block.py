@@ -120,9 +120,35 @@ def exact_pairs(q, pool):
     return e["qi"].to_numpy().astype(np.int32), e["pi"].to_numpy().astype(np.int32)
 
 
+try:  # nogil sparse row-pair dot product: lets the worker threads run truly in parallel
+    from numba import njit
+
+    @njit(nogil=True, cache=True)
+    def _pair_dot(ip1, ix1, d1, ip2, ix2, d2, qi, pi, out):
+        for k in range(len(qi)):
+            a, a1, b, b1 = ip1[qi[k]], ip1[qi[k] + 1], ip2[pi[k]], ip2[pi[k] + 1]
+            s = 0.0
+            while a < a1 and b < b1:
+                if ix1[a] == ix2[b]:
+                    s += d1[a] * d2[b]
+                    a += 1
+                    b += 1
+                elif ix1[a] < ix2[b]:
+                    a += 1
+                else:
+                    b += 1
+            out[k] = s
+except ImportError:  # pragma: no cover
+    _pair_dot = None
+
+
 def pair_cos(qm, pm, qi, pi):
-    """Row-wise cosine between query row qi and pool row pi (both L2-normalised)."""
-    out = np.empty(len(qi), np.float32)
+    """Row-wise cosine between query row qi and pool row pi (both L2-normalised, sorted indices)."""
+    out = np.zeros(len(qi), np.float32)
+    if _pair_dot is not None:
+        _pair_dot(qm.indptr, qm.indices, qm.data, pm.indptr, pm.indices, pm.data,
+                  np.asarray(qi, np.int64), np.asarray(pi, np.int64), out)
+        return out
     for s in range(0, len(qi), 2_000_000):
         e = slice(s, s + 2_000_000)
         out[e] = np.asarray(qm[qi[e]].multiply(pm[pi[e]]).sum(1)).ravel()
@@ -180,8 +206,12 @@ def block_country(q, pools, tf, model, raw):
     """All candidates for the S1 rows of one country; chunks run in parallel threads.
     (Forked processes deadlock once polars' thread pool is running, so threads are used.)"""
     global THREADS
-    _W.update(tf=tf, model=model, raw=raw, qid=q["id"].to_numpy(),
-              qm={ch: tf["vec"][ch].transform(q[f"t_{ch}"].to_list()) for _, ch in CHANNELS},
+    for m in tf["mat"].values():
+        m.sort_indices()
+    qm = {ch: tf["vec"][ch].transform(q[f"t_{ch}"].to_list()) for _, ch in CHANNELS}
+    for m in qm.values():
+        m.sort_indices()
+    _W.update(tf=tf, model=model, raw=raw, qid=q["id"].to_numpy(), qm=qm,
               pT={s: {ch: tf["mat"][(ch, s)].T.tocsr() for _, ch in CHANNELS} for s in (2, 3)},
               am={s: pools[s]["addr_missing"].to_numpy() for s in (2, 3)},
               pid={s: pools[s]["id"].to_numpy() for s in (2, 3)},

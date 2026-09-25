@@ -24,18 +24,21 @@ from common import CACHE, log
 N = CACHE / "norm"
 POOL = {"TRAIN": "train", "TEST": "test"}
 TXT = ["name_core", "name_latin", "name_alt", "name_suffix", "addr_norm", "house_no",
-       "city_guess", "state_guess", "street_tokens", "addr_missing"]
+       "city_guess", "state_guess", "street_tokens", "addr_missing", "postcode"]
 CHUNK = 4_000_000
+IDF_MAX = 12.0  # idf for tokens never seen in S1 names
 
 
 def competition(c):
     """Owner-competition features over the whole candidate table (all S1 queried)."""
+    c = c.sort(["s1_id", "source", "score"], descending=[False, False, True])  # for gap_next
     return c.with_columns(
         cand_best=pl.col("score").max().over("cand_id", "source"),
         cand_n_owners=pl.len().over("cand_id", "source").cast(pl.Int16),
         owner_rank=pl.col("score").rank("ordinal", descending=True).over("cand_id", "source").cast(pl.Int16),
         s1_best=pl.col("score").max().over("s1_id", "source"),
         s1_n_strong=(pl.col("score") > 0.5).sum().over("s1_id").cast(pl.Int16),
+        gap_next=(pl.col("score") - pl.col("score").shift(-1).over("s1_id", "source")).fill_null(pl.col("score")),
     ).with_columns(
         gap_owner=pl.col("score") - pl.col("cand_best"),
         gap_s1=pl.col("score") - pl.col("s1_best"))
@@ -47,7 +50,20 @@ def sim(a, b, scorer):
         1.0 if scorer is JaroWinkler.normalized_similarity else 100.0)
 
 
-def pair_features(d):
+def idf_overlap(d, idf):
+    """sum idf(shared tokens) / sum idf(union tokens) of the two core names (rare-token agreement)."""
+    t = (d.select(pl.int_range(pl.len()).alias("r"), a=pl.col("name_core_1").str.split(" "),
+                  b=pl.col("name_core").str.split(" "))
+          .with_columns(shared=pl.col("a").list.set_intersection("b"), union=pl.col("a").list.set_union("b")))
+    w = lambda c: (t.select("r", c).explode(c).drop_nulls(c).filter(pl.col(c) != "")
+                     .join(idf, left_on=c, right_on="tok", how="left")
+                     .group_by("r").agg(pl.col("idf").fill_null(IDF_MAX).sum()))
+    u = w("union").rename({"idf": "u"}).join(w("shared").rename({"idf": "s"}), on="r", how="left")
+    u = t.select("r").join(u, on="r", how="left").sort("r")
+    return (u["s"].fill_null(0) / u["u"].clip(lower_bound=1e-6)).cast(pl.Float32)
+
+
+def pair_features(d, idf):
     """String features for a joined chunk (left cols *_1 = S1, right = candidate)."""
     f = {}
     a, b = d["name_core_1"], d["name_core"]
@@ -63,7 +79,7 @@ def pair_features(d):
     f["a_ratio"] = sim(d["addr_norm_1"], d["addr_norm"], fuzz.ratio)
     f["street_tset"] = sim(d["street_tokens_1"], d["street_tokens"], fuzz.token_set_ratio)
     f["city_ratio"] = sim(d["city_guess_1"], d["city_guess"], fuzz.ratio)
-    d = d.with_columns(**{k: pl.Series(v) for k, v in f.items()})
+    d = d.with_columns(**{k: pl.Series(v) for k, v in f.items()}, n_idf_overlap=idf_overlap(d, idf))
     ta, tb = pl.col("name_core_1").str.split(" "), pl.col("name_core").str.split(" ")
     num = lambda c: pl.col(c).str.extract(r"^(\d+)", 1)
     both = lambda c: pl.col(c + "_1").is_not_null() & pl.col(c).is_not_null() & (pl.col(c) != "") & (pl.col(c + "_1") != "")
@@ -76,8 +92,15 @@ def pair_features(d):
         n_len_ratio=(pl.min_horizontal(pl.col("name_core_1").str.len_chars(), pl.col("name_core").str.len_chars())
                      / pl.max_horizontal(pl.col("name_core_1").str.len_chars(), pl.col("name_core").str.len_chars(), 1)).cast(pl.Float32),
         n_ntok=tb.list.len().cast(pl.Int8),
+        # 0 both missing, 1 one missing, 2 conflict, 3 equal
         suffix_state=pl.when(both("name_suffix")).then(
-            pl.when(pl.col("name_suffix_1") == pl.col("name_suffix")).then(2).otherwise(1)).otherwise(0).cast(pl.Int8),
+            pl.when(pl.col("name_suffix_1") == pl.col("name_suffix")).then(3).otherwise(2))
+            .when((pl.col("name_suffix_1").fill_null("") != "") | (pl.col("name_suffix").fill_null("") != "")).then(1)
+            .otherwise(0).cast(pl.Int8),
+        postcode_state=pl.when(both("postcode")).then(
+            (pl.col("postcode_1") == pl.col("postcode")).cast(pl.Int8) + 1).otherwise(0).cast(pl.Int8),
+        acronym=(ta.list.eval(pl.element().str.slice(0, 1)).list.join("") == pl.col("name_core"))
+                | (tb.list.eval(pl.element().str.slice(0, 1)).list.join("") == pl.col("name_core_1")),
         cand_indic=pl.col("name_raw_c").str.contains(r"[ऀ-෿]"),
         house_state=pl.when(both("house_no")).then(
             pl.when(pl.col("house_no_1") == pl.col("house_no")).then(3)
@@ -118,10 +141,12 @@ def main():
     cand = pl.concat([pl.read_parquet(N / f"{pool}_source{s}.parquet", columns=["id", "name_raw", *TXT])
                       .with_columns(source=pl.lit(s, pl.Int8)) for s in (2, 3)]).rename(
         {"id": "cand_id", "name_raw": "name_raw_c"})
+    toks = s1.select(pl.col("name_core_1").str.split(" ").list.unique().alias("tok")).explode("tok")
+    idf = toks.group_by("tok").len().with_columns(idf=(len(s1) / pl.col("len")).log().cast(pl.Float32)).select("tok", "idf")
     out = []
     for i in range(0, len(c), CHUNK):
         d = c.slice(i, CHUNK).join(s1, on="s1_id", how="left").join(cand, on=["cand_id", "source"], how="left")
-        d = pair_features(d)
+        d = pair_features(d, idf)
         out.append(d.drop([x for x in d.columns if x.endswith("_1") or x in TXT or x == "name_raw_c"]))
         log(f"  features {min(i + CHUNK, len(c)):,}/{len(c):,}")
     f = pl.concat(out)
