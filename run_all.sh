@@ -12,7 +12,7 @@ python src/train.py
 python src/decide.py
 python src/block.py --split TEST --k "$K" --floor "$FLOOR"
 python src/features.py --split TEST
-python src/train.py --predict TEST
+python src/predict.py TEST
 python src/decide.py --split TEST
 python "${VALIDATOR:-utils/validate_submission.py}" --matching output/matching_results.tsv \
     --candidate output/candidate_pairs.tsv --test-dir "$DATA"

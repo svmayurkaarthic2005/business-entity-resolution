@@ -13,7 +13,7 @@ trained here on the provided training files.
 | 2 | `src/normalize.py` | NFKD/accent/case folding; transliteration dictionary, address aliases and noise tokens **learned from FIT training pairs**; address parts |
 | 3 | `src/block.py` | per-country candidate generation: name char TF-IDF, name+address word TF-IDF, address char TF-IDF (sparse top-n), exact keys → learned re-ranker → top-K with probability floor |
 | 4 | `src/features.py` | rapidfuzz string similarities, address agreement, blocking features, owner-competition features |
-| 5 | `src/train.py` | LightGBM binary classifier + isotonic calibration |
+| 5 | `src/train.py`, `src/predict.py` | GPU XGBoost (LightGBM fallback), 3-fold GroupKFold by S1, isotonic calibration on out-of-fold scores |
 | 6 | `src/decide.py` | owner exclusivity + expected-F0.5 / threshold rule tuned on VAL; writes the two TSVs |
 | – | `src/score.py` | the competition metric (self-tests: `python src/score.py`) |
 
@@ -35,7 +35,7 @@ Every script prints timings and peak RAM; `experiments.md` logs every measured r
 ## Models and licences
 | Component | Licence | Size |
 |---|---|---|
-| LightGBM (final matcher) | MIT | gradient-boosted trees, trained here |
+| XGBoost (final matcher, GPU) — LightGBM fallback on CPU | Apache-2.0 / MIT | gradient-boosted trees, trained here |
 | scikit-learn HistGradientBoosting (blocking re-ranker), TF-IDF, isotonic | BSD-3 | trained here |
 | rapidfuzz, polars, sparse_dot_topn, indic-transliteration | MIT / MIT / Apache-2.0 / MIT | libraries |
 

@@ -8,6 +8,7 @@ indic-transliteration==2.3.82
 psutil==7.2.2
 numba==0.61.2
 lightgbm
+xgboost==3.4.1
 scikit-learn
 sparse_dot_topn==1.2.0
 PyYAML
