@@ -16,24 +16,23 @@ Per country (open set of labels), per source, S1 in chunks of 50K:
   union -> exact cosines for every pair -> learned re-ranker (or cos sum) -> keep top KEEP (--k)
 """
 import argparse
-import multiprocessing as mp
 import os
 import pickle
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import polars as pl
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sparse_dot_topn import sp_matmul_topn
-from threadpoolctl import threadpool_limits
 
 from common import CACHE, log
 
 N = CACHE / "norm"
 TF = CACHE / "tfidf"
 RETR, CHUNK, MAX_BLOCK, THREADS = 30, 20_000, 200, os.cpu_count()  # RETR = top-n per channel
-WORKERS = max(1, os.cpu_count() // 2)  # parallel chunk workers (fork; serial on Windows)
+WORKERS = max(1, os.cpu_count() // 2)  # parallel chunk threads (matmul/polars/sklearn release the GIL)
 KEEP = 30  # candidates kept per (S1, source) after re-ranking; --k
 FLOOR = 0.0  # ...and only if re-ranker probability >= FLOOR; --floor (VAL: k=10, floor=0.003 -> 97.4% recall, 11 cands/S1)
 MAX_DF = 0.01  # drop n-grams/words in >1% of names: ~8x faster top-n, negligible signal loss
@@ -150,16 +149,12 @@ def score(u, model):
     return u.with_columns(score=pl.Series(p, dtype=pl.Float32))
 
 
-_W = {}  # state shared with forked workers (copy-on-write): matrices, pools, model
+_W = {}  # state shared by the worker threads: matrices, pools, model
 
 
 def _chunk(args):
-    """Candidates for query rows c0:c1 against one source (runs in a worker process)."""
-    with threadpool_limits(THREADS):  # keep OpenMP (re-ranker) from oversubscribing the cores
-        return _chunk_body(*args)
-
-
-def _chunk_body(s, c0, c1):
+    """Candidates for query rows c0:c1 against one source (runs in a worker thread)."""
+    s, c0, c1 = args
     qm, tf, am, ex_q, ex_p, pT = _W["qm"], _W["tf"], _W["am"][s], _W["ex"][s][0], _W["ex"][s][1], _W["pT"][s]
     parts = []
     for bit, ch in CHANNELS:
@@ -182,7 +177,8 @@ def _chunk_body(s, c0, c1):
 
 
 def block_country(q, pools, tf, model, raw):
-    """All candidates for the S1 rows of one country; chunks run in parallel forked workers."""
+    """All candidates for the S1 rows of one country; chunks run in parallel threads.
+    (Forked processes deadlock once polars' thread pool is running, so threads are used.)"""
     global THREADS
     _W.update(tf=tf, model=model, raw=raw, qid=q["id"].to_numpy(),
               qm={ch: tf["vec"][ch].transform(q[f"t_{ch}"].to_list()) for _, ch in CHANNELS},
@@ -191,12 +187,9 @@ def block_country(q, pools, tf, model, raw):
               pid={s: pools[s]["id"].to_numpy() for s in (2, 3)},
               ex={s: exact_pairs(q, pools[s]) for s in (2, 3)})
     jobs = [(s, c0, min(c0 + CHUNK, len(q))) for s in (2, 3) for c0 in range(0, len(q), CHUNK)]
-    if WORKERS > 1 and len(jobs) > 1 and "fork" in mp.get_all_start_methods():
-        THREADS = max(1, os.cpu_count() // WORKERS)
-        with mp.get_context("fork").Pool(WORKERS) as pool:
-            res = pool.map(_chunk, jobs)
-    else:
-        res = [_chunk(j) for j in jobs]
+    THREADS = max(1, os.cpu_count() // WORKERS)
+    with ThreadPoolExecutor(WORKERS) as ex:
+        res = list(ex.map(_chunk, jobs))
     _W.clear()
     log(f"  {len(jobs)} chunks -> {sum(len(r) for r in res):,} candidate rows")
     return pl.concat(res).select("s1_id", "cand_id", "source", "channel",
