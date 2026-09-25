@@ -100,12 +100,19 @@ def main():
     if a.split == "TRAIN":
         sp = pl.read_parquet(CACHE / "splits.parquet").select("s1_id", "rand")
         fit = sp.filter(pl.col("rand") == "FIT").sample(fraction=a.fit_frac, seed=42)
-        keep = pl.concat([sp.filter(pl.col("rand") == "VAL"), fit])
-        c = c.join(keep, on="s1_id")
+        role = pl.concat([sp.filter(pl.col("rand") == "VAL").select("s1_id", role=pl.lit("val")),
+                          fit.select("s1_id", role=pl.lit("fit"))])
+        c = c.join(role, on="s1_id", how="left")
+        # rows of other S1 competing for the same records as VAL rows: needed for owner exclusivity
+        vcand = c.filter(pl.col("role") == "val").select("cand_id", "source").unique()
+        comp = c.join(vcand, on=["cand_id", "source"], how="semi").select("s1_id", "cand_id", "source", is_comp=pl.lit(True))
+        c = c.join(comp, on=["s1_id", "cand_id", "source"], how="left").with_columns(
+            role=pl.coalesce("role", pl.when(pl.col("is_comp")).then(pl.lit("comp")))).drop("is_comp")
+        c = c.filter(pl.col("role").is_not_null())
         gt = pl.read_parquet(CACHE / "gt_pairs.parquet").select(
             "s1_id", cand_id="match_id", source="match_source", is_match=pl.lit(True))
         c = c.join(gt, on=["s1_id", "cand_id", "source"], how="left").with_columns(pl.col("is_match").fill_null(False))
-        log(f"kept {len(c):,} rows (VAL + {a.fit_frac:.0%} FIT); positives {c['is_match'].mean():.3%}")
+        log(f"kept {len(c):,} rows by role {dict(c['role'].value_counts().iter_rows())}; positives {c['is_match'].mean():.3%}")
     s1 = pl.read_parquet(N / f"{pool}_source1.parquet", columns=["id", "country", *TXT]).rename(
         lambda x: x if x in ("id", "country") else x + "_1").rename({"id": "s1_id"})
     cand = pl.concat([pl.read_parquet(N / f"{pool}_source{s}.parquet", columns=["id", "name_raw", *TXT])
@@ -122,7 +129,7 @@ def main():
     f.write_parquet(path)
     log(f"wrote {path.name}: {f.shape}")
     if "is_match" in f.columns:
-        num = [x for x in f.columns if x not in ("s1_id", "cand_id", "rand", "country", "is_match")]
+        num = [x for x in f.columns if x not in ("s1_id", "cand_id", "role", "country", "is_match")]
         print(f.group_by("is_match").agg([pl.col(x).cast(pl.Float32).mean().round(3) for x in num]).transpose(include_header=True))
 
 

@@ -9,11 +9,11 @@ Output: cache/candidates_<split>.parquet
         s1_id, cand_id, source(2/3), channel(bitmask 1=name-char 2=word 4=exact 8=addr-char), rank, score,
         + ranking features (cosines, per-S1 maxima/ranks)   (rank 0 = best within (s1, source))
 Per country (open set of labels), per source, S1 in chunks of 50K:
-  1  char_wb 3-4gram TF-IDF on name_core                      -> top KMAX
-  2  word TF-IDF on name_core + house_no + street + city      -> top KMAX
-  8  char_wb 3-4gram TF-IDF on the full normalised address    -> top KMAX
+  1  char_wb 3-4gram TF-IDF on name_core                      -> top RETR
+  2  word TF-IDF on name_core + house_no + street + city      -> top RETR
+  8  char_wb 3-4gram TF-IDF on the full normalised address    -> top RETR
   4  exact keys (name_core; house_no+street token+city; postcode+first name token), block <= 200
-  union -> exact cosines for every pair -> learned re-ranker (or cos sum) -> keep top KMAX
+  union -> exact cosines for every pair -> learned re-ranker (or cos sum) -> keep top KEEP (--k)
 """
 import argparse
 import os
@@ -30,7 +30,8 @@ from common import CACHE, log
 
 N = CACHE / "norm"
 TF = CACHE / "tfidf"
-KMAX, CHUNK, MAX_BLOCK, THREADS = 30, 50_000, 200, os.cpu_count()
+RETR, CHUNK, MAX_BLOCK, THREADS = 30, 50_000, 200, os.cpu_count()  # RETR = top-n per channel
+KEEP = 30  # candidates kept per (S1, source) after re-ranking; --k
 MAX_DF = 0.01  # drop n-grams/words in >1% of names: ~8x faster top-n, negligible signal loss
 POOL = {"VAL": "train", "LOCO": "train", "FIT": "train", "TRAIN": "train", "TEST": "test"}
 CHANNELS = ((1, "char"), (2, "word"), (8, "addr"))
@@ -157,7 +158,7 @@ def block_country(q, pools, tf, model, raw):
             c1 = min(c0 + CHUNK, len(q))
             parts = []
             for bit, ch in CHANNELS:
-                r, p = topn(qm[ch][c0:c1], pT[ch], KMAX)
+                r, p = topn(qm[ch][c0:c1], pT[ch], RETR)
                 parts.append(pl.DataFrame({"qi": r + c0, "pi": p, "channel": np.full(len(r), bit, np.int8)}))
             m = (ex_q >= c0) & (ex_q < c1)
             parts.append(pl.DataFrame({"qi": ex_q[m], "pi": ex_p[m], "channel": np.full(m.sum(), 4, np.int8)}))
@@ -168,7 +169,7 @@ def block_country(q, pools, tf, model, raw):
             u = score(add_features(u), model)
             u = u.with_columns(rank=pl.col("score").rank("ordinal", descending=True).over("qi") - 1)
             if not raw:
-                u = u.filter(pl.col("rank") < KMAX)
+                u = u.filter(pl.col("rank") < KEEP)
             res.append(u.with_columns(
                 s1_id=pl.Series(q["id"].to_numpy()[u["qi"].to_numpy()]),
                 cand_id=pl.Series(pools[s]["id"].to_numpy()[u["pi"].to_numpy()]),
@@ -259,16 +260,17 @@ FRAC = None
 
 
 def main():
-    global FRAC
+    global FRAC, KEEP
     ap = argparse.ArgumentParser()
     ap.add_argument("--split", default="VAL", choices=list(POOL))
     ap.add_argument("--frac", type=float, default=None, help="use a fraction of the split's S1 rows")
     ap.add_argument("--raw", action="store_true", help="keep the whole union (re-ranker training rows)")
     ap.add_argument("--fit-rerank", action="store_true", help="train the re-ranker from candidates_FIT_raw")
+    ap.add_argument("--k", type=int, default=30, help="candidates kept per (S1, source)")
     a = ap.parse_args()
     if a.fit_rerank:
         return fit_rerank()
-    FRAC = a.frac
+    FRAC, KEEP = a.frac, a.k
     t0 = time.time()
     model = None if a.raw or not RERANK.exists() else pickle.load(open(RERANK, "rb"))
     log(f"re-ranker: {'learned' if model else 'cosine sum'}")
