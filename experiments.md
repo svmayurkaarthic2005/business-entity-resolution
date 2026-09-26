@@ -96,3 +96,16 @@ FN patterns (exclusive, order-dependent): empty candidate address 2,689 (US 1,72
 Bug found+fixed: exp_eb_pattern.py / exp_errbudget2.py zipped two separate group_by calls (unstable order) -> category cols and US/India pattern/FP counts were wrong in first runs; fixed in exp_eb_pattern3.py / exp_eb_union2.py, outputs eval_out3.txt are the verified ones.
 Rejected-by-rule true pairs: p quantiles 10/25/50/75/90 = .120/.230/.417/.562/.674; 35.7% have p>=0.5.
 Launched exp_rank2.py (VARIANTS=CTRL,ADDR2): CTRL = E retrained (noise floor), ADDR2 = + 13 address-consistency features (a2_*). Log /content/rank2.log.
+
+## 2026-09-26 — ADDR2 (13 address-consistency features) vs CTRL, union model, same 20 pinned split-halves
+CTRL (E retrained unchanged) reproduces E exactly: identical 20 held-out values, full-val 0.98643 (P .9945 R .9661 India .98569 US .98691) -> training is deterministic, retrain noise = 0.
+ADDR2: full-val F0.5 0.98647 (P .9945, R .9665, India .98536, US .98721), held-out mean 0.98648 / worst 0.98585 / best 0.98691; blocking recall .9861, 11.47 cand/S1.
+Gain vs 0.98108: +0.00537 mean (min +.00489 max +.00575); vs E/CTRL 0.98643: production-rule +0.00005, held-out mean +0.00015 (min -0.00006, max +0.00033), positive 18/20.
+US +0.00030, India -0.00033. Verdict: below the 0.0002-0.0003 materiality bar -> weak; no further address features. Error-budget rerun not done (not material).
+Next: exp_name.py VARIANTS=NAMEA (typo/edit/token-fuzzy) , NAMEB (domain/handle) vs CTRL. Log /content/name.log.
+
+## 2026-09-26 — NAMEA / NAMEB vs CTRL (E retrained, deterministic), union model, same 20 pinned split-halves
+NAMEA (12 typo/edit/token-fuzzy name features): full-val 0.98645 (P .9945 R .9662 India .98563 US .98699); held-out mean 0.98648 worst 0.98612 best 0.98686; vs 0.98108 +0.00537; vs E +0.00015 (min -0.00008, max +0.00034), positive 17/20; production-rule +0.00002. Worst-split improved (.98585 -> .98612).
+NAMEB (5 domain/handle features, 3.5% of rows are domain-style): full-val 0.98644 (P .9944 R .9664 India .98587 US .98681); held-out mean 0.98638 worst 0.98562 best 0.98682; vs E +0.00005 (min -0.00024, max +0.00028), positive 12/20; production-rule +0.00001.
+Both below the 0.0002 bar -> weak/noise. ADDR2, NAMEA, NAMEB each ~ +0.00005..+0.00015: pairwise-feature side is saturated. stage3/rank/gap/owner-share features already tested in exp_stack3/4 (stage 3 redundant).
+Next: exp_rule.py (no retraining): diagnostic of why true pairs are rejected (owner-demoted / floor / prefix cut / empty) + extended rule grid + logit calibration + per-country rule, held-out on the same 20 splits. Log /content/rule.log.
