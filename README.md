@@ -17,6 +17,23 @@ trained here on the provided training files.
 | 6 | `src/decide.py` | owner exclusivity + expected-F0.5 / threshold rule tuned on VAL; writes the two TSVs |
 | – | `src/score.py` | the competition metric (self-tests: `python src/score.py`) |
 
+## Current model and validation status
+
+Validation = 33,172 held-out Source-1 entities (US 19,968, India 13,204; 115,068 true pairs), macro F0.5, decision rule re-chosen on one half and scored on the other over 20 pinned split-halves. France has no labels, so no France validation score exists.
+
+| Config | Val F0.5 | Held-out mean / worst | Blocking recall | Cand./S1 |
+|---|---|---|---|---|
+| A: TF-IDF candidates, stacked GBDT (saved) | 0.98108 | 0.98111 / 0.98042 | 0.9713 | 11.05 |
+| B: + reverse dense (e5, k=1) candidates | 0.98562 | 0.98555 / 0.98505 | 0.9861 | 11.47 |
+| C: B + owner competition over the full union | 0.98641 | 0.98645 / 0.98584 | 0.9861 | 11.47 |
+| E: C + dense features (current best) | 0.98643 | 0.98633 / 0.98585 | 0.9861 | 11.47 |
+
+Most of the gain is candidate expansion (+0.0045); dense features add ~0 once full-union competition is present. Owner-competition features have a train/validation feature-distribution difference (validation rows see extra competitor rows that fit rows do not); no label or fold contamination was found.
+
+Remaining validation errors (model E): 4,113 false negatives (1,602 never retrieved, 1,669 rejected by the decision rule, 461 owner-contested, 381 outranked) and 258 false positives. The per-category oracle gains are upper bounds, not achievable gains (`experiments.md`).
+
+Experiment scripts (Colab, GPU): `src/exp_union.py` (union model), `src/exp_abl_eval2.py` (A-E table), `src/exp_eb_union2.py` + `src/exp_eb_pattern3.py` (error budget), `src/exp_rank2.py` (ranking-feature experiments on the pinned splits).
+
 ## Reproduce (Linux, ~50 GB RAM, 12 CPU; ~3 h end to end)
 
 ```bash
