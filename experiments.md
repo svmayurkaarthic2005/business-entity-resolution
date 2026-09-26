@@ -132,3 +132,9 @@ By country (test): S1 France 259,452 (15.0%) / India 809,986 / US 663,106; cands
 Diff vs output_full: pairs added India 93,166 / France 51,759 / US 59,900 (204,825); removed France 16,044 / India 62,610 / US 30,593 (109,247).
 Rank-index check (exp_rankcheck.py, VAL rows of exp/union/allf_union.parquet, stage-1 only): stage-1 features include 'rank' and 'owner_rank'; union rank is 1-based (min 1) while stage-1 was trained on 0-based. p1 with rank-1 vs as used by E: mean|diff| .00149, p99 .036, 2.27% rows |diff|>.02, corr .99986; stage-1 p1 alone production-rule F0.5 .96699 (E as used) vs .96742 (0-based) = +0.00043. Real but small; affects E/FWD4 only, not the submitted stack2fr file.
 Conclusion: artifact is the intended stack2+France-map build (US+IN val ~0.9785), not the 0.9866 model (E/FWD4 never built for TEST). Remaining gap 0.9785->0.966 not measurable (no France labels): France share 15%, plus general test shift (bigger distractor pool).
+
+## 2026-09-27 ~02:30 IST — Colab runtime RECYCLED (fresh VM; /content wiped)
+Lost (not on Drive): exp/union_fwd4 (FWD4 build + preds + models), exp/rank2 (du.parquet, CTRL/ADDR2/NAME preds), exp/rankfix, test dense encodings in progress (test S1/S2 done, S3 unfinished), logs. Results are all recorded above; scripts are in git.
+Cause of the earlier rank-fix crash: XGBoost GPU OOM (device_vector.cu:53, cudaErrorMemoryAllocation) because exp_dense.build('test') was encoding on the same GPU. No result was produced.
+On Drive (ber_ckpt, 32 GB): cache, cache_extra, exp (dense train embeddings + fwd/rev_train, union (E), union_abl_*, final, stack*, ...), output_full, SUBMIT_stack2fr, src_latest, logs.
+Recovery: drive mounted (user approved), restore_from_drive.sh running; run_chain.sh (restore -> exp_fwd rebuild [reference 0.98662] -> exp_rankfix exact rerun -> test-pool dense encoding), sequential, each stage rsyncs exp/ + logs to Drive.
