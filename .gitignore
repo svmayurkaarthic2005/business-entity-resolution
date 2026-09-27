@@ -9,3 +9,28 @@ __pycache__/
 *.pyc
 .venv/
 dist/
+
+# Documentation and notes (exclude markdown files)
+*.md
+!README.md
+
+# Backup and temporary files
+*.sh.backup
+*.bak
+*.tmp
+*.swp
+*~
+
+# IDE and editor files
+.vscode/
+.idea/
+*.sublime-*
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Environment files
+.env
+.env.local
