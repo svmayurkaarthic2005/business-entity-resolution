@@ -53,13 +53,13 @@ Copy and paste the following cells into your new Kaggle Notebook in this exact o
 ```
 
 ### Cell 2: Link the Input Data and Fix Config
-*Note: Replace `amazon-ml-2026-data` with the exact name you used for your dataset in Step 1.*
+*Note: Since your dataset is named Amazon ML, Kaggle mounts it at /kaggle/input/amazon-ml.*
 ```python
 # Create the local data directory
 !mkdir -p data
 
 # Flatten and copy all .tsv files from the extracted zip into our single data folder
-!find /kaggle/input/amazon-ml-2026-data/ -name "*.tsv" -exec cp {} data/ \;
+!find /kaggle/input/amazon-ml/ -name "*.tsv" -exec cp {} data/ \;
 
 # Overwrite config.yaml to point to this new data folder instead of C:/__MACOSX/
 %%writefile config.yaml
