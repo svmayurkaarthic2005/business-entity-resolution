@@ -27,6 +27,9 @@ Validation = 33,172 held-out Source-1 entities (US 19,968, India 13,204; 115,068
 | B: + reverse dense (e5, k=1) candidates | 0.98562 | 0.98555 / 0.98505 | 0.9861 | 11.47 |
 | C: B + owner competition over the full union | 0.98641 | 0.98645 / 0.98584 | 0.9861 | 11.47 |
 | E: C + dense features (current best) | 0.98643 | 0.98633 / 0.98585 | 0.9861 | 11.47 |
+| F: E + forward dense k=4 candidates (**frozen FWD4, `exp/union_fwd4_ctl1`**) | 0.98673 | 0.98673 / 0.98614 | 0.9871 | 14.68 |
+
+**Leaderboard:** the frozen FWD4 model's test predictions (`src/exp_fwd_test_ctl1e.py`; validator PASS, audit PASS, checksums in `experiments.md`) scored **0.979392** on the public leaderboard, against 0.98673 validation (gap ~0.0073). Retrain noise on the same GPU is about +/-0.0001 full-validation (control #2 = 0.98660); the 0-based-rank variant scored 0.98656 (not an improvement). Test differs from train in candidate-pool density (S2+S3 records per S1: 4.68 train vs 5.75 test) and adds France (15% of test S1, no labels), which behaves differently from US/India in the test diagnostics (more candidates per S1, more owner competition, lower-confidence kept matches).
 
 Most of the gain is candidate expansion (+0.0045); dense features add ~0 once full-union competition is present. Owner-competition features have a train/validation feature-distribution difference (validation rows see extra competitor rows that fit rows do not); no label or fold contamination was found.
 

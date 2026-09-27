@@ -138,3 +138,43 @@ Lost (not on Drive): exp/union_fwd4 (FWD4 build + preds + models), exp/rank2 (du
 Cause of the earlier rank-fix crash: XGBoost GPU OOM (device_vector.cu:53, cudaErrorMemoryAllocation) because exp_dense.build('test') was encoding on the same GPU. No result was produced.
 On Drive (ber_ckpt, 32 GB): cache, cache_extra, exp (dense train embeddings + fwd/rev_train, union (E), union_abl_*, final, stack*, ...), output_full, SUBMIT_stack2fr, src_latest, logs.
 Recovery: drive mounted (user approved), restore_from_drive.sh running; run_chain.sh (restore -> exp_fwd rebuild [reference 0.98662] -> exp_rankfix exact rerun -> test-pool dense encoding), sequential, each stage rsyncs exp/ + logs to Drive.
+
+## 2026-09-27 — FWD4 rebuild on new Colab VM (environment note)
+- Recovered VM: NVIDIA L4 (15150 MiB, driver 580.82.07), CUDA 12.8, Python 3.13.15, xgboost 3.4.1, polars 1.44.2, numpy 2.1.3, scikit-learn 1.6.1, torch 2.11.0+cu128.
+- A (0.98108) and E (0.98643 full-val / 0.98633 held-out) reproduce exactly. Rebuilt FWD4: full-val 0.98673, held-out mean 0.98673 (worst 0.98614, best 0.98714) vs recorded 0.98661 / 0.98662 (worst 0.98617, best 0.98702): +0.00011, attributed (unconfirmed) to GPU/library difference between VMs.
+- Decision (user): rebuilt FWD4 (0.98673) is the control for the rank-fix experiment; 0.98662 kept as historical reference only.
+- exp_fwd/exp_rankfix first failed on missing exp_union.py (env, not method); file restored (md5 2411693b7c2286e0fb0071cc6f38c8f3). Report re-run on saved predictions. exp_rankfix queued behind the dense test encoding (GPU).
+
+## 2026-09-27 — Rank-convention experiment (exp_rankfix.py, unchanged; L4 VM)
+Control = rebuilt FWD4 (rank 1-based) 0.98673. RANK0 (0-based rank, retrained stage 2): full-val 0.98656, P 0.9947, R 0.9661, India 0.98617, US 0.98681, blk recall 0.9871, 14.68 cand/S1; held-out mean 0.98657 (worst 0.98607, best 0.98701). Delta vs control: -0.00016 held-out, -0.00017 full-val. Not an improvement. Control retrain #2 (noise) queued (ctl2.sh); per-split paired diff vs control pending.
+
+### Control retrain noise + rank-fix verdict (same L4 VM, pinned folds/seeds/params/rule)
+| run | full-val F0.5 | P | R | India | US | held-out mean | worst | best |
+|---|---|---|---|---|---|---|---|---|
+| FWD4 control #1 | 0.98673 | 0.9948 | 0.9663 | 0.98640 | 0.98695 | 0.98673 | 0.98614 | 0.98714 |
+| FWD4 control #2 | 0.98660 | 0.9948 | 0.9661 | 0.98628 | 0.98681 | 0.98670 | 0.98622 | 0.98714 |
+| RANK0 (0-based rank) | 0.98656 | 0.9947 | 0.9661 | 0.98617 | 0.98681 | 0.98657 | 0.98607 | 0.98701 |
+Blocking recall 0.9871, 14.68 cand/S1 for all three.
+Retrain noise (ctl2 - ctl1): held-out mean -0.00004 (per-split -0.00024..+0.00013, 9/20 positive), full-val -0.00013. Retrain on this GPU is NOT bit-deterministic.
+RANK0 - ctl1: held-out -0.00016 (min -0.00034, max +0.00008, 1/20 positive), full-val -0.00017. vs mean of controls (held-out 0.98672, full-val 0.98667): -0.00015 / -0.00011.
+Verdict: rank-fix is not an improvement (slightly worse, same order as full-val retrain noise, consistently negative across splits). Retain FWD4 with the existing 1-based rank. NOTE: exp/union_fwd4 models u_fwd4_fold*.json are now run #2; run #1 copies are in exp/union_fwd4_ctl1/.
+
+## 2026-09-27 — Frozen-model TEST build (FWD4 control #1)
+Model dir exp/union_fwd4_ctl1 (u_fwd4_fold0/1/2.json sha256 prefixes 4f802968f68cbde2 / 88f8241128e81adf / 4ba9854e0c2138c9), 1-based rank, production rule cache/decide.json. Script src/exp_fwd_test_ctl1.py (= exp_fwd_test2.py with UN/MD -> union_fwd4_ctl1 + provenance prints), audit src/audit_test_build.py, driver run_ctl1_test.sh. Outputs exp/fwd4_test/. Not submitted.
+Rerun (patched): src/exp_fwd_test_ctl1b.py = exp_fwd_test_ctl1.py + one line after U.blocking_features: temporary 1-based rank on new rows (as exp_union.py:118), sha256 035f6baa27b55d2ad75ed099f690602bd0e00d02d55cce94b910fb2722c3132e (verified on Colab). First attempt failed with ColumnNotFoundError "rank" at line 109 (script omission, no outputs written). Driver run_ctl1_test2.sh records pre/post hashes of model, dense/candidate caches and output_full.
+Incident: the patched rerun was aborted by KeyboardInterrupt (the assistant clicked Runtime > Interrupt execution while Colab was unresponsive; not a pipeline fault). Before relaunching: exp/union_fwd4_ctl1 verified byte-identical to the hashes recorded before any test build (0 mismatches vs /content/ctl1_model_sha256_before.txt), copy rsynced to Drive (ber_ckpt/exp/union_fwd4_ctl1), patched script sha256 re-verified. Relaunched with setsid nohup (run_ctl1_test2.sh, unchanged) at ~23:47 UTC.
+Preflight (before run 3): exp/rank2/du.parquet, exp/rank2/pred_CTRL.parquet and exp/union/allf_union.parquet MISSING (lost in VM recycle); exp/fwd4_test/pred_TEST_union.parquet complete (26,705,511 rows == allf_union_test, no null p); ctl1 model hashes 0 mismatches; caches identical; output_full md5 ca0e7f42f6e576e59f97ccae7051758e (candidate_pairs) / 4b6a93207b7804b86b13c1a640b00b40 (matching_results) unchanged.
+Run 3 (diagnostic-only path change, approved): exp_fwd_test_ctl1c.py (sha256 179957259aa52b8055e36146e02551794b0248b7e5df99520a91bce545258d70) = ctl1b with parity/val_reference reading exp/fwd4_ref/du.parquet (build_ref_du.py, sha256 c443796b6d9b6d3956e08d44146863493161248262fb5ad721d368c533b9785f; assemble() of exp/union_fwd4_ctl1/allf_union.parquet, no training) and exp/union_fwd4_ctl1/pred_TRAIN_union_fwd4.parquet; --from-cache; adds assertion that re-scored TEST p equals the earlier pred_TEST_union.parquet (max|dp|<1e-6). Driver run_ctl1_test3.sh stops at first failure; status in /content/ctl1c_status.txt.
+Run 3 outcome: build stopped in diag() (first-ever execution of that diagnostic) with polars ColumnNotFoundError "s1_id". Incident: the assistant clobbered /content/ctl1c_test.log (Colab file viewer autosaved a stale 25-line buffer; log mtime 01:27 after driver end 01:03); status file untouched.
+Root cause found by read-only repro (/content/repro_diag.py -> repro_diag.txt): `apply(pred,cfg).select(KEY, "p")` with KEY a Python list returns columns ['literal','p'] in this polars version (list treated as a literal), dropping s1_id. Only occurrence in the script. Not related to model/features/candidates.
+Run 4: exp_fwd_test_ctl1e.py (sha256 e3df6e868ebd57228455c4e92769157ddd8c28a3429e651ab75b2b485e9d17dc) = ctl1c + per-table schema DIAGDBG prints + the one-line fix `select(*KEY, "p")`; driver run_ctl1_test5.sh (stderr -> ctl1e_error.txt, log -> ctl1e_test.log, never overwrites earlier logs, stops at first failure). Launched ~01:40 UTC.
+
+## 2026-09-27 — FROZEN FWD4 (ctl1) TEST BUILD: COMPLETE, ALL CHECKS PASS (not submitted)
+Run 4 (exp_fwd_test_ctl1e.py, run_ctl1_test5.sh; logs /content/ctl1e_*). Status: build OK, CTL1_MODEL_UNMODIFIED, CACHE_UNMODIFIED, VALIDATOR_PASS (rc=0, "no blocking issues found"), AUDIT_PASS (all PASS), OUTPUT_FULL_UNCHANGED, ALL_CHECKS_PASSED. Re-score check: earlier vs fresh pred_TEST_union identical (n differing 0).
+Files (/content/ber/exp/fwd4_test/): matching_results.tsv 96,935,261 B md5 c41e5749b340d36c1e2fd1f5672d401a sha256 014b83f17c01d8d97ec6c56d02823fc7dab8bd312fa7765b04ae42102e91fa94; candidate_pairs.tsv 366,537,617 B md5 9c0ae91df65a8922a44261d0beaef5be sha256 f4491350932eab156ecc0775177e3ef27b0b23de0baaa3d9da740fc5b3926c03. Rows 1,732,544 each (matching: 101,143 empty / 1,631,401 non-empty); pairs matching 5,780,395, candidates 26,705,511; 42 records matched to >1 S1.
+output_full unchanged: matching md5 4b6a93207b7804b86b13c1a640b00b40 sha256 8214e4ff8a64b3acabfd20f531a07206f21b6cdffc49c5a635604a92e2ee7b5f; candidate md5 ca0e7f42f6e576e59f97ccae7051758e sha256 9ff6696f39d8ead710bd9752105c5f115e999c8eabe88d8694260968bb8b05f9.
+Per country (test): France S1 259,452 cands/S1 21.82 pred/S1 3.316 empty 5.57% | India 809,986 15.20 3.328 5.92% | US 663,106 13.17 3.354 5.84%. Density S2+S3/S1 train 4.68 -> test 5.75 (France 5.53, India 5.82, US 5.76).
+Validation reference (frozen model): full-val F0.5 0.98673, held-out mean 0.98673 (worst 0.98614 best 0.98714).
+
+## 2026-09-27 — Leaderboard result for the frozen FWD4 test build
+Submitted matching_results.tsv (md5 c41e5749b340d36c1e2fd1f5672d401a, generated from exp/union_fwd4_ctl1) scored 0.979392 on the public leaderboard (user-reported). Validation 0.98673 -> gap ~0.0073; gap to the 0.990 target 0.0106. Keep this file as BASELINE_0.979392. Next (planned, no retraining, no submissions until reported): test-time decision-layer study on cached probabilities (exp/fwd4_test/pred_TEST_union.parquet), France normalization impact on existing candidates, low-score / high-candidate-count S1 analysis.
