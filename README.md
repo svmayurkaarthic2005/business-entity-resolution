@@ -65,4 +65,32 @@ No pretrained neural model is used, so the ≤ 8B-parameter rule is trivially me
 
 The final submission is the frozen FWD4 test build (`src/exp_fwd_test_ctl1e.py`), **leaderboard F0.5 = 0.979392**.
 `matching_results.tsv` in the repo root is exactly that file (96,935,261 bytes, MD5 `c41e5749b340d36c1e2fd1f5672d401a`).
-The later `force_top(0.40)` variant scored 0.97898 (-0.000412) and was discarded; France-only normalization experiments were not completed and are not part of the submission.
+France-only normalization experiments were not completed and are not part of the submission.
+
+## Architecture / workflow
+
+```mermaid
+flowchart TD
+    A[S1 / S2 / S3 TSVs] --> B[prepare.py: parquet, ground-truth pairs, VAL / LOCO splits]
+    B --> C[normalize.py: NFKD, accent folding, learned transliteration, aliases, legal-form noise]
+    C --> D[block.py: per-country candidates]
+    D --> D1[char + word TF-IDF sparse top-N]
+    D --> D2[exact keys]
+    D --> D3[dense e5 reverse k=1 + forward k=4]
+    D1 & D2 & D3 --> E[union candidates + learned re-ranker, top-K with floor]
+    E --> F[features.py: rapidfuzz similarities, address agreement, blocking + owner-competition features]
+    F --> G[train.py / predict.py: GPU XGBoost, 3-fold GroupKFold, isotonic calibration]
+    G --> H[decide.py: owner exclusivity + expected-F0.5 prefix selection]
+    H --> I[matching_results.tsv + candidate_pairs.tsv]
+    I --> J[validator + audit]
+```
+
+## Stack
+
+| Layer | Tools |
+|---|---|
+| Data | Python 3, Polars, pandas, PyArrow, NumPy |
+| Blocking | scikit-learn TF-IDF, sparse_dot_topn, e5 dense retrieval |
+| Matching | rapidfuzz, indic-transliteration, XGBoost (GPU) / LightGBM fallback |
+| Calibration / decision | isotonic regression, expected-F0.5 selection, owner exclusivity |
+| Infra | Google Colab (GPU), Google Drive checkpoints, shell runners |
