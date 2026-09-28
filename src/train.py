@@ -42,21 +42,21 @@ def engine():
         return "lgb"
 
 
-def fit_one(eng, xtr, ytr, xva, yva, cols):
-    """Train one model with early stopping on validation logloss; return (model, predict_fn)."""
+def fit_one(eng, xtr, ytr, xva, yva, cols, wtr=None):
+    """Train one model with early stopping on validation logloss; return (model, predict_fn).
+    wtr: optional per-row training sample weight (e.g. hard-negative upweighting); validation is never weighted."""
     if eng == "xgb":
         import xgboost as xgb
         p = dict(objective="binary:logistic", eval_metric="logloss", device="cuda", tree_method="hist",
-                 max_depth=12, learning_rate=0.01, subsample=0.8, colsample_bytree=0.8,
-                 min_child_weight=3, reg_lambda=2.0, max_bin=256, seed=42)
-        dtr, dva = xgb.DMatrix(xtr, ytr, feature_names=cols), xgb.DMatrix(xva, yva, feature_names=cols)
-        m = xgb.train(p, dtr, 10000, evals=[(dva, "val")], early_stopping_rounds=300, verbose_eval=500)
+                 max_depth=10, learning_rate=0.05, subsample=0.8, colsample_bytree=0.8,
+                 min_child_weight=5, reg_lambda=1.0, max_bin=256, seed=42)
+        dtr, dva = xgb.DMatrix(xtr, ytr, weight=wtr, feature_names=cols), xgb.DMatrix(xva, yva, feature_names=cols)
+        m = xgb.train(p, dtr, 4000, evals=[(dva, "val")], early_stopping_rounds=100, verbose_eval=500)
         return m, lambda x: m.predict(xgb.DMatrix(x, feature_names=cols), iteration_range=(0, m.best_iteration + 1))
     import lightgbm as lgb
-    p = dict(objective="binary", learning_rate=0.01, num_leaves=255, min_data_in_leaf=50,
-             feature_fraction=0.8, bagging_fraction=0.8, bagging_freq=1, lambda_l2=2.0, 
-             device="gpu", verbose=-1, seed=42)
-    m = lgb.train(p, lgb.Dataset(xtr, ytr, feature_name=cols), 10000,
+    p = dict(objective="binary", learning_rate=0.05, num_leaves=127, min_data_in_leaf=100,
+             feature_fraction=0.8, bagging_fraction=0.8, bagging_freq=1, lambda_l2=1.0, verbose=-1, seed=42)
+    m = lgb.train(p, lgb.Dataset(xtr, ytr, weight=wtr, feature_name=cols), 4000,
                   valid_sets=[lgb.Dataset(xva, yva, feature_name=cols)],
                   callbacks=[lgb.early_stopping(300), lgb.log_evaluation(500)])
     return m, lambda x: m.predict(x, num_iteration=m.best_iteration)
