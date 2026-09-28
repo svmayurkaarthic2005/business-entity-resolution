@@ -60,3 +60,9 @@ Every script prints timings and peak RAM; `experiments.md` logs every measured r
 | rapidfuzz, polars, sparse_dot_topn, indic-transliteration | MIT / MIT / Apache-2.0 / MIT | libraries |
 
 No pretrained neural model is used, so the ≤ 8B-parameter rule is trivially met.
+
+## Final submission
+
+The final submission is the frozen FWD4 test build (`src/exp_fwd_test_ctl1e.py`), **leaderboard F0.5 = 0.979392**.
+`matching_results.tsv` in the repo root is exactly that file (96,935,261 bytes, MD5 `c41e5749b340d36c1e2fd1f5672d401a`).
+The later `force_top(0.40)` variant scored 0.97898 (-0.000412) and was discarded; France-only normalization experiments were not completed and are not part of the submission.
